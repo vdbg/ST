@@ -1,5 +1,6 @@
 #!/usr/bin/python
 
+import datetime
 import time
 import decimal
 import grovepi
@@ -25,17 +26,74 @@ class MeasureTypes:# (Enum):
 	Temperature = 2
 	Humidity = 3	
 
+class SensorReadings:
+
+	def __init__(self, readings, precision, shortName, longName, valueType):
+		self.values = []
+		self.counts = 0
+		self.readings = readings
+		self.precision = precision
+		self.value = -1
+		self.shortName = shortName
+		self.longName = longName
+		self.valueType = valueType
+
+	def getValue(self):
+		return self.value
+
+	def hasValue(self):
+		return self.value != -1
+
+	def reject_outliers(self, data, m = 2.):
+		if len(data) < 5:
+			return data
+		data = np.array(data)
+		ret = data[abs(data - np.mean(data)) <= m * np.std(data)]
+#		if len(data) != len(ret):
+#			print("Removed outliers; from\n%s to\n%s" % (data, ret))
+		return ret
+	
+	def computeValue(self):
+		if (self.counts < self.readings):
+			return
+		self.value = np.round(np.average(self.reject_outliers(self.values)) / self.precision) * self.precision
+
+	def addMeasure(self, measure):
+		if not isinstance(measure, numbers.Number) or math.isnan(measure):
+			print("ERROR: unable to read %s value: %s." % (self.longName, measure))
+			return
+
+		if (self.counts < self.readings):
+			self.values.append(measure)
+		else:
+			self.values[self.counts % self.readings] = measure
+		self.counts += 1
+
+
 # Configuration start
 
-readings = 20 # Number of readings to take before aggregating. Doing it because readings fluctuate a lot
+isPro = 0 # Set to 1 is it's a GrovePi Pro DHT; 0 otherwise
 
 ports = { # comment out lines below if there's no associated device/sensor
-	PortTypes.Sound: 0, # A port number
+#	PortTypes.Sound: 0, # A port number
 	PortTypes.Light: 1, # A port number 
 	PortTypes.TemperatureHumidity: 2, # D port number
 	PortTypes.Led: 4, # D port number. If present, we turn on the led
 	PortTypes.Lcd: 1, # I2C port numner. If present, we print out values on LCD
 }
+
+# Params:
+# 1- number of readings to take before aggregating to compensate for fluctuations
+# 2- precision
+# 3, 4- short and long name
+# 5- valueType
+
+measures = {
+	MeasureTypes.Temperature: SensorReadings(60, 1, "Tmp", "Temperature", "C"),
+	MeasureTypes.Humidity: SensorReadings(60, 1, "Hum", "Humidity", "%"),
+	MeasureTypes.Sound: SensorReadings(3, 100, "Snd", "Sound", ""),
+	MeasureTypes.Light: SensorReadings(3, 100.0, "Lht", "Light", ""),
+} 
 
 tooLow = 16.0           # Too low temp
 justRight = 20.0        # OK temp
@@ -43,9 +101,6 @@ tooHigh = 23.0          # Too high temp
 
 # Configuration end
 
-values = {} # raw values recorded
-counts = {} # number of valid recordings for a given type of measure
-aggs = {}   # aggregate value for a given type of measure
 
 def updateLed(value):
 	if (ports.has_key(PortTypes.Led)):
@@ -89,32 +144,26 @@ if (ports.has_key(PortTypes.Led)):
 	grovepi.pinMode(led,"OUTPUT")
 	grovepi.analogWrite(led, 255)  # turn led to max to show readiness
 
-def addMeasure(measureType, measure, factor):
-	if not isinstance(measure, numbers.Number) or math.isnan(measure):
-		# print("ERROR: unable to read {} value.".format(measureType))
-		return
-
-	if not values.has_key(measureType):
-		values[measureType] = np.zeros(readings)
-		counts[measureType] = 0
-
-#	print("UPDATING ", measureType, " to value ", measure)
-	
-	values[measureType][counts[measureType] % readings] = measure / factor
-	counts[measureType] += 1
-
-def getAnalog(measureType, portNumber, factor):
+def getAnalog(measureType, portNumber):
 	ret = grovepi.analogRead(portNumber)
-	addMeasure(measureType, ret, factor)
+	measures[measureType].addMeasure(ret)
 
 def getTemperatureHumidity(portNumber):
 	[temperature,humidity] = [0,0]
-	[temperature,humidity] = grovepi.dht(portNumber, 0)
-	addMeasure(MeasureTypes.Temperature, temperature, 1)
-	addMeasure(MeasureTypes.Humidity, humidity, 1)
+	[temperature,humidity] = grovepi.dht(portNumber, isPro)
+	measures[MeasureTypes.Temperature].addMeasure(temperature)
+	measures[MeasureTypes.Humidity].addMeasure(humidity)
+
+def setLcd(text, rgb):
+	if not ports.has_key(PortTypes.Lcd):
+		return
+	setRGB(rgb[0], rgb[1], rgb[2])
+	setText(text)
 
 out_str = ""
 out_lcd = ""
+
+print("Starting sensor readings. Some readings may take a while to register ...")
 
 while True:
 
@@ -123,59 +172,43 @@ while True:
 
 		for portType, portNumber in ports.items():
 			if (portType == PortTypes.Sound):
-				getAnalog(MeasureTypes.Sound, portNumber, 10)
+				getAnalog(MeasureTypes.Sound, portNumber)
 			elif (portType == PortTypes.Light):
-				getAnalog(MeasureTypes.Light, portNumber, 10)
+				getAnalog(MeasureTypes.Light, portNumber)
 			elif portType == PortTypes.TemperatureHumidity:
 				getTemperatureHumidity(portNumber)
-	
-		for measureType, measures in values.items():
-		#	print("VALUES for %d are %s" %(measureType, measures))
-			if counts[measureType] < readings:
-				continue # Not enough values yet
-			oldAgg = -1
-			if (aggs.has_key(measureType)):
-				oldAgg = aggs[measureType]
-			newAgg = np.round(np.average(measures))
-			if (oldAgg != newAgg):
-				print("Aggregate for %d changed from %d to %d." % (measureType, oldAgg, newAgg))
-			aggs[measureType] = newAgg
 
 		new_out_str = ""
 		new_out_lcd = ""
-
-		for measureType, value in aggs.items():
-			if (measureType == MeasureTypes.Light):
-				new_out_str = "Light: %d %s" % (value, new_out_str)
-				new_out_lcd = "Lgt: %d %s" % (value, new_out_lcd)
-			elif (measureType == MeasureTypes.Sound):
-				new_out_str = "Sound: %d %s" % (value, new_out_str)
-				new_out_lcd = "Snd: %d %s" % (value, new_out_lcd)
-			elif (measureType == MeasureTypes.Temperature):
-				new_out_str = "Temperature: %dC %s" % (value, new_out_str)
-				new_out_lcd = "Tmp: %dC %s" % (value, new_out_lcd)
-			elif (measureType == MeasureTypes.Humidity):
-				new_out_str = "Humidity: %d %s" % (value, new_out_str)
-				new_out_lcd = "Hum: %d %s" % (value, new_out_lcd)
-
-		if aggs.has_key(MeasureTypes.Light):
-			updateLed(aggs[MeasureTypes.Light] * 2)
+	
+		for measureType, readings in measures.items():
+			oldValue = readings.getValue()
+			readings.computeValue()
+			if readings.hasValue():
+				newValue = readings.getValue()
+#				if (oldValue != newValue):
+#					print("Value for %s changed from %d to %d: %s." % (readings.longName, oldValue, newValue, readings.reject_outliers(readings.values)))
+				new_out_str = "%s: %d%s %s" % (readings.longName, newValue, readings.valueType, new_out_str)
+				new_out_lcd = "%s:%d%s %s" % (readings.shortName, newValue, readings.valueType, new_out_lcd)
+	
+		if measures[MeasureTypes.Light].hasValue():
+			updateLed(measures[MeasureTypes.Light].getValue() / 4)
 
 		if new_out_str != out_str:
 			out_str = new_out_str
-			print(out_str)
+			print("%s - %s" % (datetime.datetime.utcnow(), out_str))
 
 		if ports.has_key(PortTypes.Lcd) and new_out_lcd != out_lcd:
 			out_lcd = new_out_lcd
-			if aggs.has_key(MeasureTypes.Temperature):				
-		                bgList = calcBG(aggs[MeasureTypes.Temperature])           # Calculate background colors
-		                setRGB(bgList[0],bgList[1],bgList[2])   # parse our list into the color settings
-			setText(out_lcd)
+			rgb = (0,0,0)
+			if measures[MeasureTypes.Temperature].hasValue():
+		                rgb = calcBG(measures[MeasureTypes.Temperature].getValue())
+			setLcd(out_lcd, rgb)
 	except IOError:
 		print("IO Error")
 	except KeyboardInterrupt:
-		print("EXITNG")
-		setRGB(0,0,0)  
+		print("EXITING")
+		setLcd(" " * 32, (0,0,0))
 		updateLed(0)
 		exit()
 	except Exception as e:

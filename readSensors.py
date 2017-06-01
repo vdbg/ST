@@ -34,17 +34,25 @@ class SensorReadings:
 		self.counts = 0
 		self.readings = readings
 		self.precision = precision
-		self.value = -1
 		self.shortName = shortName
 		self.longName = longName
 		self.valueType = valueType
 		self.consecutiveFails = 0
+		self.lastFloatValue = -1
+		self.floatValue = -1
 
 	def getValue(self):
-		return self.value
+		value = self.lastFloatValue
+		if self.hasChanges():			
+			self.lastFloatValue = self.floatValue
+			value = self.floatValue
+		return np.round(value / self.precision) * self.precision
 
 	def hasValue(self):
-		return self.value != -1
+		return self.floatValue != -1
+
+	def hasChanges(self):
+		return self.lastFloatValue == -1 or abs(self.lastFloatValue - self.floatValue) > self.precision
 
 	def reject_outliers(self, data, m = 2.):
 		if len(data) < 5:
@@ -58,7 +66,8 @@ class SensorReadings:
 	def computeValue(self):
 		if (self.counts < self.readings):
 			return
-		self.value = np.round(np.average(self.reject_outliers(self.values)) / self.precision) * self.precision
+		noOutliers = self.reject_outliers(self.values)
+		self.floatValue = np.average(noOutliers)
 
 	def addMeasure(self, measure):
 		if not isinstance(measure, numbers.Number) or math.isnan(measure):
@@ -195,7 +204,7 @@ while True:
 			if readings.hasValue():
 				newValue = readings.getValue()
 				if (oldValue != newValue):
-					logging.debug("Value for %s changed from %d to %d: %s.", readings.longName, oldValue, newValue, readings.reject_outliers(readings.values))
+					logging.debug("Value for %s changed from %d to %d (%f).", readings.longName, oldValue, newValue, readings.floatValue)
 				new_out_str = "%s: %d%s %s" % (readings.longName, newValue, readings.valueType, new_out_str)
 				new_out_lcd = "%s:%d%s %s" % (readings.shortName, newValue, readings.valueType, new_out_lcd)
 	

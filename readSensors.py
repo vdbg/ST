@@ -6,6 +6,7 @@ import decimal
 import grovepi
 import math
 import numbers
+import logging
 
 from grovepi import *
 from grove_rgb_lcd import *
@@ -37,6 +38,7 @@ class SensorReadings:
 		self.shortName = shortName
 		self.longName = longName
 		self.valueType = valueType
+		self.consecutiveFails = 0
 
 	def getValue(self):
 		return self.value
@@ -49,8 +51,8 @@ class SensorReadings:
 			return data
 		data = np.array(data)
 		ret = data[abs(data - np.mean(data)) <= m * np.std(data)]
-#		if len(data) != len(ret):
-#			print("Removed outliers; from\n%s to\n%s" % (data, ret))
+		if len(data) != len(ret):
+			logging.debug("Removed outliers; from %s to %s", data, ret)
 		return ret
 	
 	def computeValue(self):
@@ -60,9 +62,13 @@ class SensorReadings:
 
 	def addMeasure(self, measure):
 		if not isinstance(measure, numbers.Number) or math.isnan(measure):
-			print("ERROR: unable to read %s value: %s." % (self.longName, measure))
+			self.consecutiveFails += 1
+			# failures are quite common. Only report if 2x in a row or more
+			if self.consecutiveFails > 1:
+				logging.warning("Unable to read %s value #%d: %s.", self.longName, self.consecutiveFail, measure)
 			return
 
+		self.consecutiveFails = 0
 		if (self.counts < self.readings):
 			self.values.append(measure)
 		else:
@@ -71,6 +77,8 @@ class SensorReadings:
 
 
 # Configuration start
+
+logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(asctime)s:%(message)s')
 
 isPro = 0 # Set to 1 is it's a GrovePi Pro DHT; 0 otherwise
 
@@ -163,7 +171,7 @@ def setLcd(text, rgb):
 out_str = ""
 out_lcd = ""
 
-print("Starting sensor readings. Some readings may take a while to register ...")
+logging.info("Starting sensor readings. Some readings may take a while to register ...")
 
 while True:
 
@@ -186,8 +194,8 @@ while True:
 			readings.computeValue()
 			if readings.hasValue():
 				newValue = readings.getValue()
-#				if (oldValue != newValue):
-#					print("Value for %s changed from %d to %d: %s." % (readings.longName, oldValue, newValue, readings.reject_outliers(readings.values)))
+				if (oldValue != newValue):
+					logging.debug("Value for %s changed from %d to %d: %s.", readings.longName, oldValue, newValue, readings.reject_outliers(readings.values))
 				new_out_str = "%s: %d%s %s" % (readings.longName, newValue, readings.valueType, new_out_str)
 				new_out_lcd = "%s:%d%s %s" % (readings.shortName, newValue, readings.valueType, new_out_lcd)
 	
@@ -196,7 +204,7 @@ while True:
 
 		if new_out_str != out_str:
 			out_str = new_out_str
-			print("%s - %s" % (datetime.datetime.utcnow(), out_str))
+			logging.info(out_str)
 
 		if ports.has_key(PortTypes.Lcd) and new_out_lcd != out_lcd:
 			out_lcd = new_out_lcd
@@ -205,12 +213,12 @@ while True:
 		                rgb = calcBG(measures[MeasureTypes.Temperature].getValue())
 			setLcd(out_lcd, rgb)
 	except IOError:
-		print("IO Error")
+		logging.error("IO Error")
 	except KeyboardInterrupt:
-		print("EXITING")
+		logging.critical("EXITING")
 		setLcd(" " * 32, (0,0,0))
 		updateLed(0)
 		exit()
 	except Exception as e:
-		print("Error: {}".format(e))
+		logging.exception("Error: %s", e)
 

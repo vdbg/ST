@@ -74,7 +74,7 @@ class SensorReadings:
 			self.consecutiveFails += 1
 			# failures are quite common. Only report if 2x in a row or more
 			if self.consecutiveFails > 1:
-				logging.warning("Unable to read %s value #%d: %s.", self.longName, self.consecutiveFail, measure)
+				logging.warning("Unable to read %s value #%d: %s.", self.longName, self.consecutiveFails, measure)
 			return
 
 		self.consecutiveFails = 0
@@ -106,10 +106,10 @@ ports = { # comment out lines below if there's no associated device/sensor
 # 5- valueType
 
 measures = {
-	MeasureTypes.Temperature: SensorReadings(60, 1, "Tmp", "Temperature", "C"),
-	MeasureTypes.Humidity: SensorReadings(60, 1, "Hum", "Humidity", "%"),
+	MeasureTypes.Temperature: SensorReadings(20, 1, "Tmp", "Temperature", "C"),
+	MeasureTypes.Humidity: SensorReadings(20, 1, "Hum", "Humidity", "%"),
 	MeasureTypes.Sound: SensorReadings(3, 100, "Snd", "Sound", ""),
-	MeasureTypes.Light: SensorReadings(3, 100.0, "Lht", "Light", ""),
+	MeasureTypes.Light: SensorReadings(3, 100, "Lht", "Light", ""),
 } 
 
 tooLow = 16.0           # Too low temp

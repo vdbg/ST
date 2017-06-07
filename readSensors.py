@@ -20,6 +20,7 @@ class PortTypes: #(Enum):
 	TemperatureHumidity = 2
 	Led = 3
 	Lcd = 4
+	Buzzer = 5
 	
 class MeasureTypes:# (Enum):
 	Sound = 0
@@ -46,7 +47,7 @@ class SensorReadings:
 		if self.hasChanges():			
 			self.lastFloatValue = self.floatValue
 			value = self.floatValue
-		return np.round(value / self.precision) * self.precision
+		return int(np.round(value / self.precision) * self.precision)
 
 	def hasValue(self):
 		return self.floatValue != -1
@@ -91,12 +92,13 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(asctime)s:%(mess
 
 isPro = 0 # Set to 1 is it's a GrovePi Pro DHT; 0 otherwise
 
-ports = { # comment out lines below if there's no associated device/sensor
-#	PortTypes.Sound: 0, # A port number
-	PortTypes.Light: 1, # A port number 
+ports = { # comment out lines below when there's no associated device/sensor
+	PortTypes.Sound: 0,  # A port number. Take sound measurements
+	PortTypes.Light: 1,  # A port number. Take light measurements
 	PortTypes.TemperatureHumidity: 2, # D port number
-	PortTypes.Led: 4, # D port number. If present, we turn on the led
-	PortTypes.Lcd: 1, # I2C port numner. If present, we print out values on LCD
+	PortTypes.Led: 4,    # D port number. Turn on the led on startup and to react to sound/light
+	PortTypes.Lcd: 1,    # I2C port numner. Print out values on LCD
+	PortTypes.Buzzer: 7, # D port number. If present, buzz when sound level is too high
 }
 
 # Params:
@@ -106,9 +108,9 @@ ports = { # comment out lines below if there's no associated device/sensor
 # 5- valueType
 
 measures = {
-	MeasureTypes.Temperature: SensorReadings(20, 1, "Tmp", "Temperature", "C"),
-	MeasureTypes.Humidity: SensorReadings(20, 1, "Hum", "Humidity", "%"),
-	MeasureTypes.Sound: SensorReadings(3, 100, "Snd", "Sound", ""),
+	MeasureTypes.Temperature: SensorReadings(60, 1, "Tmp", "Temperature", "C"),
+	MeasureTypes.Humidity: SensorReadings(60, 1, "Hum", "Humidity", "%"),
+	MeasureTypes.Sound: SensorReadings(3, 200, "Snd", "Sound", ""),
 	MeasureTypes.Light: SensorReadings(3, 100, "Lht", "Light", ""),
 } 
 
@@ -116,13 +118,35 @@ tooLow = 16.0           # Too low temp
 justRight = 20.0        # OK temp
 tooHigh = 23.0          # Too high temp
 
+soundTooHigh = 600	# Buzz if going over this level
+
+refreshPeriod = .5	# How often to refresh measurements, in seconds
 # Configuration end
 
 
-def updateLed(value):
-	if (ports.has_key(PortTypes.Led)):
-		grovepi.analogWrite(led, ports[PortTypes.Led])
+def updateAnalog(value, portType):
+	if (ports.has_key(portType)):
+		port = ports[portType]
+		logging.debug("AnalogWrite %d on port %d", value, port)
+		grovepi.analogWrite(port, value)
 
+def updateDigital(value, portType):
+	if (ports.has_key(portType)):
+		port = ports[portType]
+		logging.debug("DigitalWrite %d on port %d", value, port)
+		grovepi.digitalWrite(port, value)
+
+def enableOutput(portType):
+	if (ports.has_key(portType)):
+		port = ports[portType]
+		logging.debug("Enabling output port %d", port)
+		grovepi.pinMode(port, "OUTPUT")
+
+def updateLed(value):
+	updateAnalog(value, PortTypes.Led)
+
+def updateBuzzer(value):
+	updateDigital(value, PortTypes.Buzzer)
 
 def calcColorAdj(variance):   # Calc the adjustment value of the background color
     "Because there is 6 degrees mapping to 255 values, 42.5 is the factor for 12 degree spread"
@@ -156,11 +180,6 @@ def calcBG(ftemp):
     bgList = [bgR,bgG,bgB]          #build list of color values to return
     return bgList
 
-if (ports.has_key(PortTypes.Led)):
-	led = ports[PortTypes.Led]
-	grovepi.pinMode(led,"OUTPUT")
-	grovepi.analogWrite(led, 255)  # turn led to max to show readiness
-
 def getAnalog(measureType, portNumber):
 	ret = grovepi.analogRead(portNumber)
 	measures[measureType].addMeasure(ret)
@@ -177,6 +196,28 @@ def setLcd(text, rgb):
 	setRGB(rgb[0], rgb[1], rgb[2])
 	setText(text)
 
+def onValueChanged(measureType, oldValue, newValue):
+	logging.debug("Value for %s changed from %d to %d (%f).", readings.longName, oldValue, newValue, readings.floatValue)
+	if measureType == MeasureTypes.Light:
+		updateLed(newValue / 4)
+	if measureType == MeasureTypes.Sound and ports.has_key(PortTypes.Buzzer):
+		if newValue > soundTooHigh:
+			updateBuzzer(1)
+		else:
+			updateBuzzer(0)
+
+def initOutputs():
+	enableOutput(PortTypes.Led)
+	enableOutput(PortTypes.Buzzer)
+	# Show that we're ready
+	updateLed(255)
+	updateBuzzer(1)
+	time.sleep(.1)
+	updateBuzzer(0)
+
+
+initOutputs()
+
 out_str = ""
 out_lcd = ""
 
@@ -185,7 +226,7 @@ logging.info("Starting sensor readings. Some readings may take a while to regist
 while True:
 
 	try:
-		time.sleep(1)
+		time.sleep(refreshPeriod)
 
 		for portType, portNumber in ports.items():
 			if (portType == PortTypes.Sound):
@@ -204,13 +245,11 @@ while True:
 			if readings.hasValue():
 				newValue = readings.getValue()
 				if (oldValue != newValue):
-					logging.debug("Value for %s changed from %d to %d (%f).", readings.longName, oldValue, newValue, readings.floatValue)
-				new_out_str = "%s: %d%s %s" % (readings.longName, newValue, readings.valueType, new_out_str)
+					onValueChanged(measureType, oldValue, newValue)
+											
+				new_out_str = "%s: %d%s;%s" % (readings.longName, newValue, readings.valueType, new_out_str)
 				new_out_lcd = "%s:%d%s %s" % (readings.shortName, newValue, readings.valueType, new_out_lcd)
 	
-		if measures[MeasureTypes.Light].hasValue():
-			updateLed(measures[MeasureTypes.Light].getValue() / 4)
-
 		if new_out_str != out_str:
 			out_str = new_out_str
 			logging.info(out_str)
@@ -227,6 +266,7 @@ while True:
 		logging.critical("EXITING")
 		setLcd(" " * 32, (0,0,0))
 		updateLed(0)
+		updateBuzzer(0)
 		exit()
 	except Exception as e:
 		logging.exception("Error: %s", e)

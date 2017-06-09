@@ -54,6 +54,9 @@ class SensorReadings(object): # pylint: disable=R0902
         return self.last_float_value == -1 or \
                abs(self.last_float_value - self.float_value) >= self.precision
 
+    def last_measure(self):
+        return self.values[self.counts % self.readings]
+
     @staticmethod
     def reject_outliers(data):
         if len(data) < 5:
@@ -102,7 +105,7 @@ ENABLED_PORTS = {  # comment out lines below when there's no associated device/s
     PortTypes.Led: 4,    # D port number. Turn on the led on startup and to react to sound/light
     PortTypes.Lcd: 1,    # I2C port number. Print out values on LCD
     PortTypes.Button: 3, # D port number. If present, button turns on/off LCD screen
-    PortTypes.Buzzer: 7, # D port number. If present, buzz when sound level is too high
+#    PortTypes.Buzzer: 7, # D port number. If present, buzz when sound level is too high
 }
 
 # Params:
@@ -124,15 +127,20 @@ GOOD_TEMPERATURE = 20.0
 SOUND_TOO_HIGH = 600  # Buzz if going over this level
 
 LOOP_SECONDS = .5  # How often to refresh measurements, in seconds
+GROVE_BUG_WAIT = .25 # How long to wait between 2 readings. When reading "too fast" we sometimes get the value for the previous port
 # Configuration end
 
 def is_enabled(port_type):
     return ENABLED_PORTS.has_key(port_type)
 
+def grove_bug():
+    time.sleep(GROVE_BUG_WAIT)
+
 def update_analog(value, port_type):
     if is_enabled(port_type):
         port = ENABLED_PORTS[port_type]
         logging.debug("AnalogWrite %d on port %d", value, port)
+        grove_bug()
         grovepi.analogWrite(port, value)
 
 
@@ -140,6 +148,7 @@ def update_digital(value, port_type):
     if is_enabled(port_type):
         port = ENABLED_PORTS[port_type]
         logging.debug("DigitalWrite %d on port %d", value, port)
+        grove_bug()
         grovepi.digitalWrite(port, value)
 
 
@@ -147,12 +156,14 @@ def enable_output_port(port_type):
     if is_enabled(port_type):
         port = ENABLED_PORTS[port_type]
         logging.debug("Enabling output port %d", port)
+        grove_bug()
         grovepi.pinMode(port, "OUTPUT")
 
 def enable_input_port(port_type):
     if is_enabled(port_type):
         port = ENABLED_PORTS[port_type]
         logging.debug("Enabling input port %d", port)
+        grove_bug()
         grovepi.pinMode(port, "INPUT")
 
 
@@ -199,19 +210,20 @@ def calc_background(ftemp):
 
 
 def get_analog(measure_type, port_number):
-    time.sleep(.1) # if we don't wait a little, this previous reading on another port leaks on current one
+    grove_bug()
     ret = grovepi.analogRead(port_number)
     logging.debug("Analog measure for measure type %d on port %d is %d", measure_type, port_number, ret)
     MEASURES[measure_type].add_measure(ret)
 
 def get_digital(measure_type, port_number):
-    time.sleep(.1) # if we don't wait a little, this previous reading on another port leaks on current one
+    grove_bug()
     ret = grovepi.digitalRead(port_number)
     logging.debug("Digital measure for measure type %d on port %d is %d", measure_type, port_number, ret)
     MEASURES[measure_type].add_measure(ret)
 
 
 def get_temperature_humidity(port_number):
+    grove_bug()
     [temperature, humidity] = [0, 0]
     [temperature, humidity] = grovepi.dht(port_number, IS_GROVE_PRO)
     MEASURES[MeasureTypes.Temperature].add_measure(temperature)
@@ -220,6 +232,7 @@ def get_temperature_humidity(port_number):
 
 def set_lcd(text, rgb):
     if is_enabled(PortTypes.Lcd):
+        grove_bug()
         grove_lcd.setRGB(rgb[0], rgb[1], rgb[2])
         grove_lcd.setText(text)
 
@@ -289,8 +302,8 @@ def main():
                         new_out_lcd = "%s:%d%s %s" % (readings.short_name, new_value, readings.value_type, new_out_lcd)
 
                     if measure_type == MeasureTypes.Sound and is_enabled(PortTypes.Buzzer):
-                        if readings.float_value >= SOUND_TOO_HIGH:
-                            logging.info("Sound reading at %s", readings.float_value)
+                        if readings.last_measure() >= SOUND_TOO_HIGH:
+                            logging.info("Current reading at %s; last readings: %s", readings.last_measure(), readings.values)
                             update_buzzer(1)
                         else:
                             update_buzzer(0)

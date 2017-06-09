@@ -1,4 +1,4 @@
-#!/usr/bin/python27
+#!/usr/bin/python
 
 import time
 import math
@@ -17,14 +17,14 @@ class PortTypes(object): # pylint: disable=R0903
     Led = 3
     Lcd = 4
     Buzzer = 5
-
+    Button = 6
 
 class MeasureTypes(object): # pylint: disable=R0903
     Sound = 0
     Light = 1
     Temperature = 2
     Humidity = 3
-
+    Button = 4
 
 class SensorReadings(object): # pylint: disable=R0902
 
@@ -52,7 +52,7 @@ class SensorReadings(object): # pylint: disable=R0902
 
     def has_changes(self):
         return self.last_float_value == -1 or \
-		       abs(self.last_float_value - self.float_value) > self.precision
+               abs(self.last_float_value - self.float_value) > self.precision
 
     @staticmethod
     def reject_outliers(data):
@@ -99,8 +99,9 @@ ENABLED_PORTS = {  # comment out lines below when there's no associated device/s
     PortTypes.Light: 1,  # A port number. Take light measurements
     PortTypes.TemperatureHumidity: 2,  # D port number
     PortTypes.Led: 4,    # D port number. Turn on the led on startup and to react to sound/light
-    PortTypes.Lcd: 1,    # I2C port numner. Print out values on LCD
-    PortTypes.Buzzer: 7,  # D port number. If present, buzz when sound level is too high
+    PortTypes.Lcd: 1,    # I2C port number. Print out values on LCD
+    PortTypes.Button: 8, # D port number. If present, button turns on/off LCD screen
+    PortTypes.Buzzer: 7, # D port number. If present, buzz when sound level is too high
 }
 
 # Params:
@@ -114,6 +115,7 @@ MEASURES = {
     MeasureTypes.Humidity: SensorReadings(60, 1, "Hum", "Humidity", "%"),
     MeasureTypes.Sound: SensorReadings(3, 200, "Snd", "Sound", ""),
     MeasureTypes.Light: SensorReadings(3, 100, "Lht", "Light", ""),
+    MeasureTypes.Button: SensorReadings(1, 1, "Btn", "Button", ""),
 }
 
 GOOD_TEMPERATURE = 20.0
@@ -123,26 +125,34 @@ SOUND_TOO_HIGH = 600  # Buzz if going over this level
 LOOP_SECONDS = .5  # How often to refresh measurements, in seconds
 # Configuration end
 
+def is_enabled(port_type):
+    return ENABLED_PORTS.has_key(port_type)
 
 def update_analog(value, port_type):
-    if ENABLED_PORTS.has_key(port_type):
+    if is_enabled(port_type):
         port = ENABLED_PORTS[port_type]
         logging.debug("AnalogWrite %d on port %d", value, port)
         grovepi.analogWrite(port, value)
 
 
 def update_digital(value, port_type):
-    if ENABLED_PORTS.has_key(port_type):
+    if is_enabled(port_type):
         port = ENABLED_PORTS[port_type]
         logging.debug("DigitalWrite %d on port %d", value, port)
         grovepi.digitalWrite(port, value)
 
 
 def enable_output_port(port_type):
-    if ENABLED_PORTS.has_key(port_type):
+    if is_enabled(port_type):
         port = ENABLED_PORTS[port_type]
         logging.debug("Enabling output port %d", port)
         grovepi.pinMode(port, "OUTPUT")
+
+def enable_input_port(port_type):
+    if is_enabled(port_type):
+        port = ENABLED_PORTS[port_type]
+        logging.debug("Enabling input port %d", port)
+        grovepi.pinMode(port, "INPUT")
 
 
 def update_led(value):
@@ -191,6 +201,10 @@ def get_analog(measure_type, port_number):
     ret = grovepi.analogRead(port_number)
     MEASURES[measure_type].add_measure(ret)
 
+def get_digital(measure_type, port_number):
+    ret = grovepi.digitalRead(port_number)
+    MEASURES[measure_type].add_measure(ret)
+
 
 def get_temperature_humidity(port_number):
     [temperature, humidity] = [0, 0]
@@ -200,10 +214,9 @@ def get_temperature_humidity(port_number):
 
 
 def set_lcd(text, rgb):
-    if not ENABLED_PORTS.has_key(PortTypes.Lcd):
-        return
-    grove_lcd.setRGB(rgb[0], rgb[1], rgb[2])
-    grove_lcd.setText(text)
+    if is_enabled(PortTypes.Lcd):
+        grove_lcd.setRGB(rgb[0], rgb[1], rgb[2])
+        grove_lcd.setText(text)
 
 
 def on_value_changed(measure_type, old_value, new_value, readings):
@@ -211,8 +224,8 @@ def on_value_changed(measure_type, old_value, new_value, readings):
                   readings.long_name, old_value, new_value, readings.float_value)
     if measure_type == MeasureTypes.Light:
         update_led(new_value / 4)
-    if measure_type == MeasureTypes.Sound and ENABLED_PORTS.has_key(PortTypes.Buzzer):
-        if new_value > SOUND_TOO_HIGH:
+    if measure_type == MeasureTypes.Sound and is_enabled(PortTypes.Buzzer):
+        if new_value >= SOUND_TOO_HIGH:
             update_buzzer(1)
         else:
             update_buzzer(0)
@@ -222,9 +235,9 @@ def init_outputs():
     enable_output_port(PortTypes.Buzzer)
     # Show that we're ready
     update_led(255)
-    update_buzzer(1)
-    time.sleep(.1)
-    update_buzzer(0)
+    #update_buzzer(1)
+    #time.sleep(.1)
+    #update_buzzer(0)
 
 def read_all():
     for port_type, port_number in ENABLED_PORTS.items():
@@ -232,14 +245,16 @@ def read_all():
             get_analog(MeasureTypes.Sound, port_number)
         elif port_type == PortTypes.Light:
             get_analog(MeasureTypes.Light, port_number)
+        elif port_type == PortTypes.Button:
+            get_digital(MeasureTypes.Button, port_number)
         elif port_type == PortTypes.TemperatureHumidity:
             get_temperature_humidity(port_number)
-
 
 def main():
     init_outputs()
     out_str = ""
     out_lcd = ""
+    show_lcd = not ENABLED_PORTS.has_key(PortTypes.Button)
 
     logging.info("Starting sensor readings. Some readings may take a while to register ...")
 
@@ -265,11 +280,15 @@ def main():
                     new_out_lcd = "%s:%d%s %s" % (
                         readings.short_name, new_value, readings.value_type, new_out_lcd)
 
+                    if measure_type == MeasureTypes.Button and new_value != 0:
+                        show_lcd = not show_lcd
+                        logging("Switching LCD to %s", show_lcd)
+
             if new_out_str != out_str:
                 out_str = new_out_str
                 logging.info(out_str)
 
-            if ENABLED_PORTS.has_key(PortTypes.Lcd) and new_out_lcd != out_lcd:
+            if show_lcd and is_enabled(PortTypes.Lcd) and new_out_lcd != out_lcd:
                 out_lcd = new_out_lcd
                 rgb = (0, 0, 0)
                 if MEASURES[MeasureTypes.Temperature].has_value():

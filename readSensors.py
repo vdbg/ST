@@ -52,7 +52,7 @@ class SensorReadings(object): # pylint: disable=R0902
 
     def has_changes(self):
         return self.last_float_value == -1 or \
-               abs(self.last_float_value - self.float_value) > self.precision
+               abs(self.last_float_value - self.float_value) >= self.precision
 
     @staticmethod
     def reject_outliers(data):
@@ -80,6 +80,7 @@ class SensorReadings(object): # pylint: disable=R0902
             return
 
         self.consecutive_fails = 0
+        logging.debug("Adding measure %s for %s", measure, self.long_name)
         if self.counts < self.readings:
             self.values.append(measure)
         else:
@@ -100,7 +101,7 @@ ENABLED_PORTS = {  # comment out lines below when there's no associated device/s
     PortTypes.TemperatureHumidity: 2,  # D port number
     PortTypes.Led: 4,    # D port number. Turn on the led on startup and to react to sound/light
     PortTypes.Lcd: 1,    # I2C port number. Print out values on LCD
-    PortTypes.Button: 8, # D port number. If present, button turns on/off LCD screen
+    PortTypes.Button: 3, # D port number. If present, button turns on/off LCD screen
     PortTypes.Buzzer: 7, # D port number. If present, buzz when sound level is too high
 }
 
@@ -174,7 +175,7 @@ def adjust_color(variance):
 
 
 def calc_background(ftemp):
-    "This calculates the color value for the background"
+    """This calculates the color value for the background"""
     variance = ftemp - GOOD_TEMPERATURE   # Calculate the variance
     adj = adjust_color(variance)   # Scale it to 8 bit int
     ret = [0, 0, 0]               # initialize the color array
@@ -198,11 +199,15 @@ def calc_background(ftemp):
 
 
 def get_analog(measure_type, port_number):
+    time.sleep(.1) # if we don't wait a little, this previous reading on another port leaks on current one
     ret = grovepi.analogRead(port_number)
+    logging.debug("Analog measure for measure type %d on port %d is %d", measure_type, port_number, ret)
     MEASURES[measure_type].add_measure(ret)
 
 def get_digital(measure_type, port_number):
+    time.sleep(.1) # if we don't wait a little, this previous reading on another port leaks on current one
     ret = grovepi.digitalRead(port_number)
+    logging.debug("Digital measure for measure type %d on port %d is %d", measure_type, port_number, ret)
     MEASURES[measure_type].add_measure(ret)
 
 
@@ -218,17 +223,20 @@ def set_lcd(text, rgb):
         grove_lcd.setRGB(rgb[0], rgb[1], rgb[2])
         grove_lcd.setText(text)
 
+def clear_lcd():
+    set_lcd(" " * 32, (0, 0, 0))
 
-def on_value_changed(measure_type, old_value, new_value, readings):
+def on_value_changed(measure_type, old_value, new_value, readings, show_lcd):
     logging.debug("Value for %s changed from %d to %d (%f).",
                   readings.long_name, old_value, new_value, readings.float_value)
     if measure_type == MeasureTypes.Light:
         update_led(new_value / 4)
-    if measure_type == MeasureTypes.Sound and is_enabled(PortTypes.Buzzer):
-        if new_value >= SOUND_TOO_HIGH:
-            update_buzzer(1)
-        else:
-            update_buzzer(0)
+    if measure_type == MeasureTypes.Button and new_value == 1:
+        show_lcd = not show_lcd
+        logging.info("Switching LCD to %s", show_lcd)
+        if not show_lcd:
+            clear_lcd()
+    return show_lcd
 
 def init_outputs():
     enable_output_port(PortTypes.Led)
@@ -273,16 +281,19 @@ def main():
                 if readings.has_value():
                     new_value = readings.get_value()
                     if old_value != new_value:
-                        on_value_changed(measure_type, old_value, new_value, readings)
+                        show_lcd = on_value_changed(measure_type, old_value, new_value, readings, show_lcd)
 
-                    new_out_str = "%s: %d%s;%s" % (
-                        readings.long_name, new_value, readings.value_type, new_out_str)
-                    new_out_lcd = "%s:%d%s %s" % (
-                        readings.short_name, new_value, readings.value_type, new_out_lcd)
+                    new_out_str = "%s: %d%s;%s" % (readings.long_name, new_value, readings.value_type, new_out_str)
 
-                    if measure_type == MeasureTypes.Button and new_value != 0:
-                        show_lcd = not show_lcd
-                        logging("Switching LCD to %s", show_lcd)
+                    if measure_type != MeasureTypes.Button:
+                        new_out_lcd = "%s:%d%s %s" % (readings.short_name, new_value, readings.value_type, new_out_lcd)
+
+                    if measure_type == MeasureTypes.Sound and is_enabled(PortTypes.Buzzer):
+                        if readings.float_value >= SOUND_TOO_HIGH:
+                            logging.info("Sound reading at %s", readings.float_value)
+                            update_buzzer(1)
+                        else:
+                            update_buzzer(0)
 
             if new_out_str != out_str:
                 out_str = new_out_str
@@ -298,7 +309,7 @@ def main():
             logging.error("IO Error")
         except KeyboardInterrupt:
             logging.critical("EXITING")
-            set_lcd(" " * 32, (0, 0, 0))
+            clear_lcd()
             update_led(0)
             update_buzzer(0)
             exit()
